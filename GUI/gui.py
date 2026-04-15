@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 	QPlainTextEdit,
 	QProgressDialog,
 	QPushButton,
+	QSizePolicy,
 	QStatusBar,
 	QTableWidget,
 	QTableWidgetItem,
@@ -591,6 +592,7 @@ class MainWindow(QMainWindow):
 		self._create_menu_and_toolbar()
 		self._create_status_bar()
 		self._create_panels()
+		self._fit_window_to_screen()
 		self.controller.set_serial_io_observer(self._on_serial_io)
 
 		if self.controller.is_serial_connected():
@@ -616,6 +618,11 @@ class MainWindow(QMainWindow):
 		self.default_base_action = QAction("Set Default Base Address...", self)
 		self.default_base_action.triggered.connect(self.set_default_base_address)
 
+		self.skip_loader_verify_action = QAction("Skip Verify After Load", self)
+		self.skip_loader_verify_action.setCheckable(True)
+		self.skip_loader_verify_action.setChecked(False)
+		self.skip_loader_verify_action.toggled.connect(self._on_skip_loader_verify_toggled)
+
 		self.show_registers_action = QAction("Special Registers", self)
 		self.show_registers_action.triggered.connect(self.show_registers_dock)
 
@@ -634,6 +641,9 @@ class MainWindow(QMainWindow):
 
 		settings_menu = self.menuBar().addMenu("Settings")
 		settings_menu.addAction(self.default_base_action)
+
+		preferences_menu = self.menuBar().addMenu("Preferences")
+		preferences_menu.addAction(self.skip_loader_verify_action)
 
 		view_menu = self.menuBar().addMenu("View")
 		view_menu.addAction(self.show_registers_action)
@@ -823,6 +833,7 @@ class MainWindow(QMainWindow):
 		layout = QVBoxLayout(wrapper)
 
 		controls = QWidget()
+		controls.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
 		controls_layout = QFormLayout(controls)
 		self.program_base_input = QLineEdit(format_octal(self.default_base_address))
 		read_btn = QPushButton("Read Program File")
@@ -837,6 +848,8 @@ class MainWindow(QMainWindow):
 		self.program_table = QTableWidget(0, 4)
 		self.program_table.setHorizontalHeaderLabels(["Address", "Word", "ASCII", "INFO"])
 		self.program_table.setFont(self.fixed_font)
+		self.program_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+		self.program_table.setMinimumHeight(180)
 		self.program_table.horizontalHeader().setStretchLastSection(True)
 
 		layout.addWidget(controls)
@@ -894,6 +907,11 @@ class MainWindow(QMainWindow):
 		self._refresh_breakpoint_table()
 		if self.controller.is_serial_connected():
 			self.refresh_registers(show_progress=False)
+
+	def _on_skip_loader_verify_toggled(self, enabled: bool) -> None:
+		state = "enabled" if enabled else "disabled"
+		self.statusBar().showMessage(f"Skip verify after load {state}", 3000)
+		self._log(f"Preferences updated: skip verify after load {state}")
 
 	def show_registers_dock(self) -> None:
 		self.register_dock.show()
@@ -1429,8 +1447,10 @@ class MainWindow(QMainWindow):
 			return
 
 		total_words = len(self.program_words)
-		total_steps = total_words * 2
-		progress = QProgressDialog("Loading and verifying program...", "", 0, total_steps, self)
+		skip_verify = self.skip_loader_verify_action.isChecked()
+		total_steps = total_words if skip_verify else total_words * 2
+		progress_label = "Loading program..." if skip_verify else "Loading and verifying program..."
+		progress = QProgressDialog(progress_label, "", 0, total_steps, self)
 		progress.setWindowTitle("Working")
 		progress.setCancelButton(None)
 		progress.setWindowModality(Qt.WindowModal)
@@ -1444,6 +1464,12 @@ class MainWindow(QMainWindow):
 				progress.setLabelText(f"Writing word {index}/{total_words}...")
 				progress.setValue(index)
 				QApplication.processEvents()
+
+			if skip_verify:
+				self.statusBar().showMessage("Program loaded; memory verify skipped", 3000)
+				self._log(f"Loaded {total_words} words to target memory; post-load verify skipped")
+				self.read_memory_range(show_progress=False)
+				return
 
 			mismatches = []
 			for index, (address, expected) in enumerate(self.program_words, start=1):
